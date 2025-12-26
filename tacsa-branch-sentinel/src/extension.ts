@@ -10,20 +10,32 @@ type RepoInfo = {
 type RepoRule = { prod?: string[]; dev?: string[]; neutral?: string[] };
 type RepoRules = Record<string, RepoRule>;
 
-// Visual modes (tint + icon)
 type Mode = "prod" | "dev" | "neutral" | "unknown" | "local";
-
-// Modes that are valid for repoRules
 type RuleMode = "prod" | "dev" | "neutral";
 
 const CFG_KEY_TINT_ENABLED = "tacsaBranchSentinel.enableStatusBarTint";
+const CFG_REPO_RULES = "tacsaBranchSentinel.repoRules";
 const CFG_PINNED = "tacsaBranchSentinel.pinnedRepos";
-const CFG_PRIMARY = "tacsaBranchSentinel.primaryRepo"; // <-- needs to exist in package.json contributes.configuration
-
-// ---------- Config helpers ----------
 
 function cfg() {
 	return vscode.workspace.getConfiguration();
+}
+
+function codicon(name: string) {
+	return `$(${name})`;
+}
+
+function truncateName(name: string, max = 10): string {
+	return name.length <= max ? name : name.slice(0, max) + "…";
+}
+
+function getRepoRules(): RepoRules {
+	return (cfg().get(CFG_REPO_RULES) ?? {}) as RepoRules;
+}
+
+function getPinnedRepos(): string[] {
+	const arr = cfg().get<string[]>(CFG_PINNED, []);
+	return Array.isArray(arr) ? arr.filter(Boolean) : [];
 }
 
 function isTintEnabled(): boolean {
@@ -38,41 +50,11 @@ async function setTintEnabled(enabled: boolean) {
 	);
 }
 
-function getRepoRules(): RepoRules {
-	return (cfg().get("tacsaBranchSentinel.repoRules") ?? {}) as RepoRules;
-}
-
 function getIconSetting(
 	key: "iconProd" | "iconDev" | "iconNeutral",
 	fallback: string,
 ) {
 	return String(cfg().get(`tacsaBranchSentinel.${key}`, fallback)).trim();
-}
-
-function codicon(name: string) {
-	return `$(${name})`;
-}
-
-function uniq(arr: string[]) {
-	return Array.from(new Set(arr));
-}
-
-function getPinnedRepos(): string[] {
-	const arr = cfg().get<string[]>(CFG_PINNED, []);
-	return Array.isArray(arr) ? arr.filter(Boolean) : [];
-}
-
-function getPrimaryRepo(): string {
-	return String(cfg().get(CFG_PRIMARY, "")).trim();
-}
-
-async function setPrimaryRepo(name: string) {
-	await cfg().update(CFG_PRIMARY, name, vscode.ConfigurationTarget.Workspace);
-}
-
-function truncateName(name: string, max = 10): string {
-	if (name.length <= max) return name;
-	return name.slice(0, max) + "…";
 }
 
 // ---------- Pattern matching for repoRules ----------
@@ -82,12 +64,10 @@ function matchesPattern(branch: string, pattern: string): boolean {
 	const p = pattern.toLowerCase().trim();
 	if (!p) return false;
 
-	// Exact match fast-path
 	if (!p.includes("*")) return b === p;
 
-	// Simple wildcard: split on * and ensure parts appear in order
 	const parts = p.split("*").filter(Boolean);
-	if (parts.length === 0) return true; // pattern "*" matches anything
+	if (parts.length === 0) return true; // "*" matches anything
 
 	let idx = 0;
 	for (const part of parts) {
@@ -109,50 +89,56 @@ function ruleSource(
 ): "repo-rule" | "default" {
 	const rules = getRepoRules()[repoName];
 	if (!rules || !branch) return "default";
-
 	if (listMatches(branch, rules.prod)) return "repo-rule";
 	if (listMatches(branch, rules.dev)) return "repo-rule";
 	if (listMatches(branch, rules.neutral)) return "repo-rule";
-
 	return "default";
 }
 
-// ---------- Branch / repo → mode / icon ----------
+// ---------- Mode / icon ----------
 
 function modeFor(repo: RepoInfo): Mode {
-	// Local-only repo? Give it its own visual identity.
+	// Local-only repo? Visual identity.
 	if (!repo.hasRemote) return "local";
 
 	const b = (repo.branch ?? "").toLowerCase();
 	const rules = getRepoRules()[repo.name];
 
-	// Repo overrides first
 	if (rules && repo.branch) {
 		if (listMatches(repo.branch, rules.prod)) return "prod";
 		if (listMatches(repo.branch, rules.dev)) return "dev";
 		if (listMatches(repo.branch, rules.neutral)) return "neutral";
 	}
 
-	// Defaults
 	if (b === "master" || b === "main") return "prod";
 	if (b === "dev") return "dev";
-
-	// Not recognised & not rule-mapped
 	return "unknown";
 }
 
 function iconForMode(mode: Mode): string {
 	if (mode === "prod") return codicon(getIconSetting("iconProd", "shield"));
 	if (mode === "dev") return codicon(getIconSetting("iconDev", "tools"));
-	if (mode === "unknown") return codicon("question");
+	if (mode === "neutral")
+		return codicon(getIconSetting("iconNeutral", "git-branch"));
 	if (mode === "local") return codicon("lock");
-	return codicon(getIconSetting("iconNeutral", "git-branch"));
+	return codicon("question");
 }
 
-// ---------- Status bar tint ----------
+// Backgrounds for the *secondary* item (theme colors only)
+function backgroundForMode(mode: Mode): vscode.ThemeColor | undefined {
+	if (mode === "prod")
+		return new vscode.ThemeColor("statusBarItem.errorBackground");
+	if (mode === "unknown")
+		return new vscode.ThemeColor("statusBarItem.warningBackground");
+	// Optional: dev highlight (you can remove this if you want dev to be “default”)
+	if (mode === "dev")
+		return new vscode.ThemeColor("statusBarItem.prominentBackground");
+	return undefined;
+}
+
+// ---------- Global status bar tint (workspace) ----------
 
 async function setStatusBarTheme(mode: Mode) {
-	// Workspace-scoped: writes to .vscode/settings.json
 	const current = (cfg().get("workbench.colorCustomizations") ?? {}) as Record<
 		string,
 		any
@@ -168,15 +154,14 @@ async function setStatusBarTheme(mode: Mode) {
 		next["statusBar.foreground"] = "#ffffff";
 		next["statusBar.debuggingBackground"] = "#0f6b2f";
 	} else if (mode === "unknown") {
-		next["statusBar.background"] = "#b36b00"; // orange
+		next["statusBar.background"] = "#b36b00";
 		next["statusBar.foreground"] = "#ffffff";
 		next["statusBar.debuggingBackground"] = "#b36b00";
 	} else if (mode === "local") {
-		next["statusBar.background"] = "#5b2b82"; // purple
+		next["statusBar.background"] = "#5b2b82";
 		next["statusBar.foreground"] = "#ffffff";
 		next["statusBar.debuggingBackground"] = "#5b2b82";
 	} else {
-		// Neutral => return to theme defaults
 		delete next["statusBar.background"];
 		delete next["statusBar.foreground"];
 		delete next["statusBar.debuggingBackground"];
@@ -201,10 +186,7 @@ function repoNameFromUri(uri: vscode.Uri): string {
 async function getGitApi() {
 	const ext = vscode.extensions.getExtension("vscode.git");
 	if (!ext) return undefined;
-
-	// Ensure the Git extension is activated before reading exports
 	await ext.activate();
-
 	return ext.exports.getAPI(1);
 }
 
@@ -218,7 +200,6 @@ async function getRepoInfos(): Promise<RepoInfo[]> {
 		const path = repo.rootUri.fsPath;
 		const hasRemote =
 			Array.isArray(repo.state.remotes) && repo.state.remotes.length > 0;
-
 		return { name, branch, path, hasRemote };
 	});
 }
@@ -229,27 +210,11 @@ function chooseActiveRepo(infos: RepoInfo[]): RepoInfo {
 	return infos.find((r) => activePath.startsWith(r.path)) ?? infos[0];
 }
 
-function chooseDisplayRepo(infos: RepoInfo[]): RepoInfo {
-	const pinned = getPinnedRepos();
-	const primary = getPrimaryRepo();
-
-	// 1) primary if set and exists
-	if (primary) {
-		const r = infos.find((x) => x.name === primary);
-		if (r) return r;
-	}
-
-	// 2) first pinned
-	if (pinned.length > 0) {
-		const r = infos.find((x) => x.name === pinned[0]);
-		if (r) return r;
-	}
-
-	// 3) fallback: active
-	return chooseActiveRepo(infos);
-}
-
 // ---------- Repo rules mutation ----------
+
+function uniq(arr: string[]) {
+	return Array.from(new Set(arr));
+}
 
 async function upsertRule(mode: RuleMode, repoName: string, branch: string) {
 	const rulesAll = getRepoRules();
@@ -266,7 +231,6 @@ async function upsertRule(mode: RuleMode, repoName: string, branch: string) {
 		neutral: existing.neutral ?? [],
 	};
 
-	// Remove from all buckets first
 	next.prod = (next.prod ?? []).filter(
 		(x) => x.toLowerCase() !== b.toLowerCase(),
 	);
@@ -277,7 +241,6 @@ async function upsertRule(mode: RuleMode, repoName: string, branch: string) {
 		(x) => x.toLowerCase() !== b.toLowerCase(),
 	);
 
-	// Add to selected bucket
 	if (mode === "prod") next.prod = uniq([...(next.prod ?? []), b]);
 	else if (mode === "dev") next.dev = uniq([...(next.dev ?? []), b]);
 	else next.neutral = uniq([...(next.neutral ?? []), b]);
@@ -285,7 +248,7 @@ async function upsertRule(mode: RuleMode, repoName: string, branch: string) {
 	rulesAll[repoName] = next;
 
 	await cfg().update(
-		"tacsaBranchSentinel.repoRules",
+		CFG_REPO_RULES,
 		rulesAll,
 		vscode.ConfigurationTarget.Workspace,
 	);
@@ -300,36 +263,72 @@ async function getActiveRepoAndBranch(): Promise<{
 
 	const active = chooseActiveRepo(infos);
 	const branch = active.branch ?? "";
-
 	if (!branch) {
 		vscode.window.showWarningMessage(
 			"TacSA: No branch detected (detached HEAD?).",
 		);
 		return null;
 	}
-
 	return { repo: active, branch };
 }
 
-// ---------- Commands (icons / rules / pinned) ----------
+// ---------- Commands ----------
+
+async function pickPinnedReposOnlyOther(activeRepoName: string) {
+	const infos = await getRepoInfos();
+	if (infos.length === 0) {
+		vscode.window.showInformationMessage("No Git repositories detected.");
+		return;
+	}
+
+	// Only offer “other repos”, never the active one
+	const others = infos.filter((r) => r.name !== activeRepoName);
+	if (others.length === 0) {
+		vscode.window.showInformationMessage("No other repos in this workspace.");
+		return;
+	}
+
+	const current = new Set(getPinnedRepos());
+
+	const picks = await vscode.window.showQuickPick(
+		others.map((r) => ({
+			label: r.name,
+			description: r.branch ?? "DETACHED",
+			detail: !r.hasRemote ? "local-only (no remote)" : undefined,
+			picked: current.has(r.name),
+		})),
+		{
+			canPickMany: true,
+			placeHolder:
+				"Select OTHER repos to show (active repo is handled by Git/Source Control)",
+		},
+	);
+
+	if (!picks) return;
+
+	const selected = picks.map((p) => p.label);
+	await cfg().update(
+		CFG_PINNED,
+		selected,
+		vscode.ConfigurationTarget.Workspace,
+	);
+
+	vscode.window.showInformationMessage(
+		`TacSA: tracking ${selected.length} repo(s).`,
+	);
+}
 
 async function pickIcons() {
 	const choices = [
 		"shield",
-		"warning",
 		"tools",
+		"git-branch",
+		"beaker",
 		"rocket",
 		"bug",
-		"beaker",
-		"flask",
+		"warning",
 		"check",
-		"git-branch",
 		"circle-large-outline",
-		"circle-slash",
-		"zap",
-		"wrench",
-		"lock",
-		"question",
 	];
 
 	const pick = async (label: string, current: string) =>
@@ -408,7 +407,7 @@ async function editRepoRules() {
 	};
 
 	await cfg().update(
-		"tacsaBranchSentinel.repoRules",
+		CFG_REPO_RULES,
 		rulesAll,
 		vscode.ConfigurationTarget.Workspace,
 	);
@@ -418,89 +417,17 @@ async function editRepoRules() {
 	);
 }
 
-async function pickPinnedRepos() {
-	const infos = await getRepoInfos();
-	if (infos.length === 0) {
-		vscode.window.showInformationMessage("No Git repositories detected.");
-		return;
-	}
-
-	const currentPinned = new Set(getPinnedRepos());
-
-	const picks = await vscode.window.showQuickPick(
-		infos.map((r) => ({
-			label: r.name,
-			description: r.branch ?? "DETACHED",
-			picked: currentPinned.has(r.name),
-		})),
-		{
-			canPickMany: true,
-			placeHolder: "Select repos to pin in the Branch Sentinel display",
-		},
-	);
-
-	if (!picks) return;
-
-	const selected = picks.map((p) => p.label);
-	await cfg().update(
-		CFG_PINNED,
-		selected,
-		vscode.ConfigurationTarget.Workspace,
-	);
-
-	// Primary selection (fixed display repo)
-	if (selected.length === 0) {
-		await setPrimaryRepo("");
-		vscode.window.showInformationMessage("TacSA: pinned repos cleared.");
-		return;
-	}
-
-	const existingPrimary = getPrimaryRepo();
-	const defaultPrimary =
-		(existingPrimary &&
-			selected.includes(existingPrimary) &&
-			existingPrimary) ||
-		selected[0];
-
-	// If only one selected, set it automatically.
-	if (selected.length === 1) {
-		await setPrimaryRepo(selected[0]);
-		vscode.window.showInformationMessage(
-			`TacSA: pinned 1 repo (primary = ${selected[0]}).`,
-		);
-		return;
-	}
-
-	const primaryPick = await vscode.window.showQuickPick(selected, {
-		placeHolder: `Pick the repo Sentinel should DISPLAY (primary). Current: ${defaultPrimary}`,
-	});
-
-	if (!primaryPick) {
-		// User cancelled – keep a valid primary
-		await setPrimaryRepo(defaultPrimary);
-		vscode.window.showInformationMessage(
-			`TacSA: pinned ${selected.length} repo(s) (primary = ${defaultPrimary}).`,
-		);
-		return;
-	}
-
-	await setPrimaryRepo(primaryPick);
-
-	vscode.window.showInformationMessage(
-		`TacSA: pinned ${selected.length} repo(s) (primary = ${primaryPick}).`,
-	);
-}
-
 // ---------- Extension entry ----------
 
 export function activate(context: vscode.ExtensionContext) {
-	const status = vscode.window.createStatusBarItem(
+	// Item A: controls + shows OTHER repos only (never the active one)
+	const trackedItem = vscode.window.createStatusBarItem(
 		vscode.StatusBarAlignment.Left,
-		1000,
+		998,
 	);
-	status.name = "TacSA Branch Sentinel";
-	status.command = "tacsa-branch-sentinel.pickPinnedRepos";
-	status.show();
+	trackedItem.name = "TacSA Branch Sentinel (Other repos)";
+	trackedItem.command = "tacsa-branch-sentinel.pickPinnedRepos";
+	trackedItem.show();
 
 	let lastTintMode: Mode | null = null;
 	let lastWarnedKey: string | null = null;
@@ -509,33 +436,28 @@ export function activate(context: vscode.ExtensionContext) {
 		const infos = await getRepoInfos();
 
 		if (infos.length === 0) {
-			status.text = "⎇ No Git repo";
-			status.tooltip = "TacSA Branch Sentinel: No Git repositories detected.";
+			trackedItem.text = "⎇ No Git repo";
+			trackedItem.tooltip =
+				"TacSA Branch Sentinel: No Git repositories detected.";
+			trackedItem.backgroundColor = undefined;
 			return;
 		}
 
-		// ACTIVE repo = whatever file you're in (drives tint + prod warning)
 		const active = chooseActiveRepo(infos);
 		const activeMode = modeFor(active);
 
-		// DISPLAY repo = fixed (primary/pinned) so it doesn't rotate
-		const display = chooseDisplayRepo(infos);
-		const displayMode = modeFor(display);
-
-		// Tint (workspace) follows ACTIVE repo
+		// --- Global tint follows ACTIVE repo only
 		if (isTintEnabled()) {
 			if (activeMode !== lastTintMode) {
 				lastTintMode = activeMode;
 				await setStatusBarTheme(activeMode);
 			}
-		} else {
-			if (lastTintMode !== "neutral") {
-				lastTintMode = "neutral";
-				await setStatusBarTheme("neutral");
-			}
+		} else if (lastTintMode !== "neutral") {
+			lastTintMode = "neutral";
+			await setStatusBarTheme("neutral");
 		}
 
-		// One-time prod warning (ACTIVE repo only)
+		// One-time prod warning for ACTIVE repo only
 		const warnKey = `${active.name}:${active.branch ?? "DETACHED"}`;
 		if (activeMode === "prod" && lastWarnedKey !== warnKey) {
 			lastWarnedKey = warnKey;
@@ -545,43 +467,77 @@ export function activate(context: vscode.ExtensionContext) {
 			);
 		}
 
-		const activeBranchLabel = active.branch ?? "DETACHED";
-		const activeSuffix =
-			ruleSource(active.name, active.branch) === "repo-rule" ? " (rule)" : "";
-		const activeIcon = iconForMode(activeMode);
+		// --- Secondary item: only when >1 repo exists
+		const others = infos.filter((r) => r.name !== active.name);
+		if (others.length === 0) {
+			trackedItem.hide();
+			return;
+		}
+		trackedItem.show();
 
-		const pinned = getPinnedRepos();
-		const pinnedCount = pinned.length;
+		// Which “other repos” are selected? (never include active)
+		const pinned = getPinnedRepos().filter((n) => n !== active.name);
 
-		// Pinned display (optional)
-		let rightPart = "";
-		if (pinnedCount > 0) {
-			const extra = pinnedCount > 1 ? ` +${pinnedCount - 1}` : "";
-			const label = pinnedCount > 1 ? truncateName(display.name) : display.name;
-			const displayIcon = iconForMode(displayMode);
-			const displayBranch = display.branch ?? "DETACHED";
-			rightPart = ` | + ${displayIcon} ${label} • ${displayBranch}${extra}`;
-		} else {
-			const others = infos.length - 1;
-			rightPart = others > 0 ? ` | +${others}` : "";
+		// If nothing selected yet, show an instruction affordance
+		if (pinned.length === 0) {
+			trackedItem.text = `${codicon("list-selection")} select repos`;
+			trackedItem.tooltip =
+				"TacSA Branch Sentinel:\nClick to select which OTHER repos to show here.\n(Active repo is already shown by Git/Source Control.)";
+			trackedItem.backgroundColor = undefined;
+			return;
 		}
 
-		status.text = `${activeIcon} ${active.name} • ${activeBranchLabel}${activeSuffix}${rightPart}`;
+		const pinnedInfos = pinned
+			.map((name) => others.find((r) => r.name === name))
+			.filter(Boolean) as RepoInfo[];
 
-		// Tooltip: list all repos + state + rule source + local flag
-		status.tooltip = infos
+		// If config references repos not present, show a gentle prompt
+		if (pinnedInfos.length === 0) {
+			trackedItem.text = `${codicon("list-selection")} select repos`;
+			trackedItem.tooltip =
+				"TacSA Branch Sentinel:\nNone of your selected repos are currently present in this workspace.\nClick to re-select.";
+			trackedItem.backgroundColor = undefined;
+			return;
+		}
+
+		// Show up to N “other repos” inline, clipped names; remainder becomes +X
+		const maxShown = 2;
+		const shown = pinnedInfos.slice(0, maxShown);
+		const remaining = pinnedInfos.length - shown.length;
+
+		const parts = shown.map((r) => {
+			const m = modeFor(r);
+			const icon = iconForMode(m);
+			const nm = truncateName(r.name, 10);
+			const br = r.branch ?? "DETACHED";
+			return `${icon} ${nm}•${br}`;
+		});
+
+		const suffix = remaining > 0 ? ` +${remaining}` : "";
+		trackedItem.text = `+ ${parts.join(" | ")}${suffix}`;
+
+		// Colour this item based on the “worst” mode in the shown list
+		const severityRank: Record<Mode, number> = {
+			prod: 5,
+			unknown: 4,
+			dev: 3,
+			local: 2,
+			neutral: 1,
+		};
+		const worst = shown
+			.map(modeFor)
+			.sort((a, b) => severityRank[b] - severityRank[a])[0];
+
+		trackedItem.backgroundColor = backgroundForMode(worst);
+
+		// Tooltip includes ALL pinned (not clipped) + rule/remote tags
+		trackedItem.tooltip = pinnedInfos
 			.map((r) => {
 				const m = modeFor(r);
 				const src =
 					ruleSource(r.name, r.branch) === "repo-rule" ? "rule" : "default";
 				const remoteTag = r.hasRemote ? "remote" : "local-only";
-				const pinTag = pinned.includes(r.name)
-					? r.name === getPrimaryRepo()
-						? "PRIMARY"
-						: "pinned"
-					: "";
-				const pinSuffix = pinTag ? `, ${pinTag}` : "";
-				return `${iconForMode(m)} ${r.name}: ${r.branch ?? "DETACHED"} [${src}, ${remoteTag}${pinSuffix}]`;
+				return `${iconForMode(m)} ${r.name}: ${r.branch ?? "DETACHED"} [${src}, ${remoteTag}]`;
 			})
 			.join("\n");
 	};
@@ -589,16 +545,13 @@ export function activate(context: vscode.ExtensionContext) {
 	// Commands
 	context.subscriptions.push(
 		vscode.commands.registerCommand(
-			"tacsa-branch-sentinel.showDetails",
+			"tacsa-branch-sentinel.pickPinnedRepos",
 			async () => {
 				const infos = await getRepoInfos();
-				if (infos.length === 0) {
-					vscode.window.showInformationMessage("No Git repositories detected.");
-					return;
-				}
-				vscode.window.showInformationMessage(
-					infos.map((r) => `${r.name}: ${r.branch ?? "DETACHED"}`).join(" • "),
-				);
+				if (infos.length === 0) return;
+				const active = chooseActiveRepo(infos);
+				await pickPinnedReposOnlyOther(active.name);
+				await update();
 			},
 		),
 
@@ -634,13 +587,6 @@ export function activate(context: vscode.ExtensionContext) {
 			"tacsa-branch-sentinel.editRepoRules",
 			editRepoRules,
 		),
-		vscode.commands.registerCommand(
-			"tacsa-branch-sentinel.pickPinnedRepos",
-			async () => {
-				await pickPinnedRepos();
-				await update(); // reflect immediately
-			},
-		),
 
 		vscode.commands.registerCommand(
 			"tacsa-branch-sentinel.markProd",
@@ -648,35 +594,24 @@ export function activate(context: vscode.ExtensionContext) {
 				const ctx = await getActiveRepoAndBranch();
 				if (!ctx) return;
 				await upsertRule("prod", ctx.repo.name, ctx.branch);
-				vscode.window.showInformationMessage(
-					`TacSA: ${ctx.repo.name}/${ctx.branch} marked PROD.`,
-				);
 				await update();
 			},
 		),
-
 		vscode.commands.registerCommand(
 			"tacsa-branch-sentinel.markDev",
 			async () => {
 				const ctx = await getActiveRepoAndBranch();
 				if (!ctx) return;
 				await upsertRule("dev", ctx.repo.name, ctx.branch);
-				vscode.window.showInformationMessage(
-					`TacSA: ${ctx.repo.name}/${ctx.branch} marked DEV.`,
-				);
 				await update();
 			},
 		),
-
 		vscode.commands.registerCommand(
 			"tacsa-branch-sentinel.markNeutral",
 			async () => {
 				const ctx = await getActiveRepoAndBranch();
 				if (!ctx) return;
 				await upsertRule("neutral", ctx.repo.name, ctx.branch);
-				vscode.window.showInformationMessage(
-					`TacSA: ${ctx.repo.name}/${ctx.branch} marked NEUTRAL.`,
-				);
 				await update();
 			},
 		),
