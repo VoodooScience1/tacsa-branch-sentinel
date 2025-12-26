@@ -49,6 +49,10 @@
 			{
 				"command": "tacsa-branch-sentinel.markNeutral",
 				"title": "TacSA: Mark Current Branch as NEUTRAL (Repo Rule)"
+			},
+			{
+				"command": "tacsa-branch-sentinel.pickPinnedRepos",
+				"title": "TacSA: Pick Pinned Repos (Workspace)"
 			}
 		],
 		"configuration": {
@@ -98,6 +102,14 @@
 					"type": "string",
 					"default": "circle-large-outline",
 					"description": "Codicon name for neutral/other branches."
+				},
+				"tacsaBranchSentinel.pinnedRepos": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [],
+					"description": "Workspace folder names to pin in the Branch Sentinel UI (multi-select)."
 				}
 			}
 		}
