@@ -1,0 +1,131 @@
+{
+	"name": "tacsa-branch-sentinel",
+	"displayName": "TacSA Branch Sentinel",
+	"description": "Formatter for customer status bar to help identify git repos and manage commits, branches and development.",
+	"version": "0.0.1",
+	"engines": {
+		"vscode": "^1.107.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"activationEvents": [
+		"*"
+	],
+	"extensionDependencies": [
+		"vscode.git"
+	],
+	"main": "./dist/extension.js",
+	"contributes": {
+		"commands": [
+			{
+				"command": "tacsa-branch-sentinel.showDetails",
+				"title": "TacSA: Show Branch Sentinel Details"
+			},
+			{
+				"command": "tacsa-branch-sentinel.enableTint",
+				"title": "TacSA: Enable Status Bar Tint (Workspace)"
+			},
+			{
+				"command": "tacsa-branch-sentinel.disableTint",
+				"title": "TacSA: Disable Status Bar Tint (Workspace)"
+			},
+			{
+				"command": "tacsa-branch-sentinel.pickIcons",
+				"title": "TacSA: Pick Branch Icons"
+			},
+			{
+				"command": "tacsa-branch-sentinel.editRepoRules",
+				"title": "TacSA: Edit Repo Rules (Current Repo)"
+			},
+			{
+				"command": "tacsa-branch-sentinel.markProd",
+				"title": "TacSA: Mark Current Branch as PROD (Repo Rule)"
+			},
+			{
+				"command": "tacsa-branch-sentinel.markDev",
+				"title": "TacSA: Mark Current Branch as DEV (Repo Rule)"
+			},
+			{
+				"command": "tacsa-branch-sentinel.markNeutral",
+				"title": "TacSA: Mark Current Branch as NEUTRAL (Repo Rule)"
+			}
+		],
+		"configuration": {
+			"title": "TacSA Branch Sentinel",
+			"properties": {
+				"tacsaBranchSentinel.enableStatusBarTint": {
+					"type": "boolean",
+					"default": true,
+					"description": "Enable status bar background tinting based on the current Git branch (workspace setting)."
+				},
+				"tacsaBranchSentinel.defaultProdBranches": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [
+						"main",
+						"master"
+					],
+					"description": "Default list of branches treated as production if no per-repo override exists."
+				},
+				"tacsaBranchSentinel.branchColors": {
+					"type": "object",
+					"default": {
+						"main": "#7a1111",
+						"master": "#7a1111",
+						"dev": "#0f6b2f"
+					},
+					"description": "Map of branch name -> status bar background color (hex)."
+				},
+				"tacsaBranchSentinel.repoRules": {
+					"type": "object",
+					"default": {},
+					"description": "Per-repo branch rules. Key = repo folder name. Value = { prod: [], dev: [], neutral: [] }."
+				},
+				"tacsaBranchSentinel.iconProd": {
+					"type": "string",
+					"default": "beaker",
+					"description": "Codicon name for prod (master/main). Example: beaker, tools, rocket."
+				},
+				"tacsaBranchSentinel.iconDev": {
+					"type": "string",
+					"default": "beaker",
+					"description": "Codicon name for dev."
+				},
+				"tacsaBranchSentinel.iconNeutral": {
+					"type": "string",
+					"default": "circle-large-outline",
+					"description": "Codicon name for neutral/other branches."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run package",
+		"compile": "npm run check-types && npm run lint && node esbuild.js",
+		"watch": "npm-run-all -p watch:*",
+		"watch:esbuild": "node esbuild.js --watch",
+		"watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+		"package": "npm run check-types && npm run lint && node esbuild.js --production",
+		"compile-tests": "tsc -p . --outDir out",
+		"watch-tests": "tsc -p . -w --outDir out",
+		"pretest": "npm run compile-tests && npm run compile && npm run lint",
+		"check-types": "tsc --noEmit",
+		"lint": "eslint src",
+		"test": "vscode-test"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.107.0",
+		"@types/mocha": "^10.0.10",
+		"@types/node": "22.x",
+		"typescript-eslint": "^8.48.1",
+		"eslint": "^9.39.1",
+		"esbuild": "^0.27.1",
+		"npm-run-all": "^4.1.5",
+		"typescript": "^5.9.3",
+		"@vscode/test-cli": "^0.0.12",
+		"@vscode/test-electron": "^2.5.2"
+	}
+}
