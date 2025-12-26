@@ -18,6 +18,7 @@ type RuleMode = "prod" | "dev" | "neutral";
 
 const CFG_KEY_TINT_ENABLED = "tacsaBranchSentinel.enableStatusBarTint";
 const CFG_PINNED = "tacsaBranchSentinel.pinnedRepos";
+const CFG_PRIMARY = "tacsaBranchSentinel.primaryRepo"; // <-- needs to exist in package.json contributes.configuration
 
 // ---------- Config helpers ----------
 
@@ -59,6 +60,14 @@ function uniq(arr: string[]) {
 function getPinnedRepos(): string[] {
 	const arr = cfg().get<string[]>(CFG_PINNED, []);
 	return Array.isArray(arr) ? arr.filter(Boolean) : [];
+}
+
+function getPrimaryRepo(): string {
+	return String(cfg().get(CFG_PRIMARY, "")).trim();
+}
+
+async function setPrimaryRepo(name: string) {
+	await cfg().update(CFG_PRIMARY, name, vscode.ConfigurationTarget.Workspace);
 }
 
 function truncateName(name: string, max = 10): string {
@@ -218,6 +227,26 @@ function chooseActiveRepo(infos: RepoInfo[]): RepoInfo {
 	const activeDoc = vscode.window.activeTextEditor?.document?.uri;
 	const activePath = activeDoc?.fsPath ?? "";
 	return infos.find((r) => activePath.startsWith(r.path)) ?? infos[0];
+}
+
+function chooseDisplayRepo(infos: RepoInfo[]): RepoInfo {
+	const pinned = getPinnedRepos();
+	const primary = getPrimaryRepo();
+
+	// 1) primary if set and exists
+	if (primary) {
+		const r = infos.find((x) => x.name === primary);
+		if (r) return r;
+	}
+
+	// 2) first pinned
+	if (pinned.length > 0) {
+		const r = infos.find((x) => x.name === pinned[0]);
+		if (r) return r;
+	}
+
+	// 3) fallback: active
+	return chooseActiveRepo(infos);
 }
 
 // ---------- Repo rules mutation ----------
@@ -396,13 +425,13 @@ async function pickPinnedRepos() {
 		return;
 	}
 
-	const current = new Set(getPinnedRepos());
+	const currentPinned = new Set(getPinnedRepos());
 
 	const picks = await vscode.window.showQuickPick(
 		infos.map((r) => ({
 			label: r.name,
 			description: r.branch ?? "DETACHED",
-			picked: current.has(r.name),
+			picked: currentPinned.has(r.name),
 		})),
 		{
 			canPickMany: true,
@@ -419,8 +448,46 @@ async function pickPinnedRepos() {
 		vscode.ConfigurationTarget.Workspace,
 	);
 
+	// Primary selection (fixed display repo)
+	if (selected.length === 0) {
+		await setPrimaryRepo("");
+		vscode.window.showInformationMessage("TacSA: pinned repos cleared.");
+		return;
+	}
+
+	const existingPrimary = getPrimaryRepo();
+	const defaultPrimary =
+		(existingPrimary &&
+			selected.includes(existingPrimary) &&
+			existingPrimary) ||
+		selected[0];
+
+	// If only one selected, set it automatically.
+	if (selected.length === 1) {
+		await setPrimaryRepo(selected[0]);
+		vscode.window.showInformationMessage(
+			`TacSA: pinned 1 repo (primary = ${selected[0]}).`,
+		);
+		return;
+	}
+
+	const primaryPick = await vscode.window.showQuickPick(selected, {
+		placeHolder: `Pick the repo Sentinel should DISPLAY (primary). Current: ${defaultPrimary}`,
+	});
+
+	if (!primaryPick) {
+		// User cancelled – keep a valid primary
+		await setPrimaryRepo(defaultPrimary);
+		vscode.window.showInformationMessage(
+			`TacSA: pinned ${selected.length} repo(s) (primary = ${defaultPrimary}).`,
+		);
+		return;
+	}
+
+	await setPrimaryRepo(primaryPick);
+
 	vscode.window.showInformationMessage(
-		`TacSA: pinned ${selected.length} repo(s) (workspace).`,
+		`TacSA: pinned ${selected.length} repo(s) (primary = ${primaryPick}).`,
 	);
 }
 
@@ -432,7 +499,7 @@ export function activate(context: vscode.ExtensionContext) {
 		1000,
 	);
 	status.name = "TacSA Branch Sentinel";
-	status.command = "tacsa-branch-sentinel.showDetails";
+	status.command = "tacsa-branch-sentinel.pickPinnedRepos";
 	status.show();
 
 	let lastTintMode: Mode | null = null;
@@ -447,8 +514,13 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
+		// ACTIVE repo = whatever file you're in (drives tint + prod warning)
 		const active = chooseActiveRepo(infos);
 		const activeMode = modeFor(active);
+
+		// DISPLAY repo = fixed (primary/pinned) so it doesn't rotate
+		const display = chooseDisplayRepo(infos);
+		const displayMode = modeFor(display);
 
 		// Tint (workspace) follows ACTIVE repo
 		if (isTintEnabled()) {
@@ -473,29 +545,22 @@ export function activate(context: vscode.ExtensionContext) {
 			);
 		}
 
-		// Pinned display (optional)
-		const pinned = getPinnedRepos();
-		const pinnedInfos = pinned
-			.map((name) => infos.find((r) => r.name === name))
-			.filter(Boolean) as RepoInfo[];
-
 		const activeBranchLabel = active.branch ?? "DETACHED";
 		const activeSuffix =
 			ruleSource(active.name, active.branch) === "repo-rule" ? " (rule)" : "";
 		const activeIcon = iconForMode(activeMode);
 
-		// Active repo always shown first. Then either:
-		// - if pinned selection exists: show a compact "+ ..." for pinned group
-		// - else: show "+N" count of other repos in workspace
+		const pinned = getPinnedRepos();
+		const pinnedCount = pinned.length;
+
+		// Pinned display (optional)
 		let rightPart = "";
-		if (pinnedInfos.length > 0) {
-			const first = pinnedInfos[0];
-			const extra = pinnedInfos.length > 1 ? ` +${pinnedInfos.length - 1}` : "";
-			const label =
-				pinnedInfos.length > 1 ? truncateName(first.name) : first.name;
-			const firstIcon = iconForMode(modeFor(first));
-			const firstBranch = first.branch ?? "DETACHED";
-			rightPart = ` | + ${firstIcon} ${label} • ${firstBranch}${extra}`;
+		if (pinnedCount > 0) {
+			const extra = pinnedCount > 1 ? ` +${pinnedCount - 1}` : "";
+			const label = pinnedCount > 1 ? truncateName(display.name) : display.name;
+			const displayIcon = iconForMode(displayMode);
+			const displayBranch = display.branch ?? "DETACHED";
+			rightPart = ` | + ${displayIcon} ${label} • ${displayBranch}${extra}`;
 		} else {
 			const others = infos.length - 1;
 			rightPart = others > 0 ? ` | +${others}` : "";
@@ -510,7 +575,13 @@ export function activate(context: vscode.ExtensionContext) {
 				const src =
 					ruleSource(r.name, r.branch) === "repo-rule" ? "rule" : "default";
 				const remoteTag = r.hasRemote ? "remote" : "local-only";
-				return `${iconForMode(m)} ${r.name}: ${r.branch ?? "DETACHED"} [${src}, ${remoteTag}]`;
+				const pinTag = pinned.includes(r.name)
+					? r.name === getPrimaryRepo()
+						? "PRIMARY"
+						: "pinned"
+					: "";
+				const pinSuffix = pinTag ? `, ${pinTag}` : "";
+				return `${iconForMode(m)} ${r.name}: ${r.branch ?? "DETACHED"} [${src}, ${remoteTag}${pinSuffix}]`;
 			})
 			.join("\n");
 	};
@@ -565,7 +636,10 @@ export function activate(context: vscode.ExtensionContext) {
 		),
 		vscode.commands.registerCommand(
 			"tacsa-branch-sentinel.pickPinnedRepos",
-			pickPinnedRepos,
+			async () => {
+				await pickPinnedRepos();
+				await update(); // reflect immediately
+			},
 		),
 
 		vscode.commands.registerCommand(

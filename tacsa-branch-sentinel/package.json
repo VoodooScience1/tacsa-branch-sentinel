@@ -110,6 +110,11 @@
 					},
 					"default": [],
 					"description": "Workspace folder names to pin in the Branch Sentinel UI (multi-select)."
+				},
+				"tacsaBranchSentinel.primaryRepo": {
+					"type": "string",
+					"default": "",
+					"description": "The repo that Sentinel should display (workspace). Leave blank to use the first pinned repo."
 				}
 			}
 		}
