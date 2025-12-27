@@ -274,24 +274,22 @@ async function getActiveRepoAndBranch(): Promise<{
 
 // ---------- Commands ----------
 
-async function pickPinnedReposOnlyOther(activeRepoName: string) {
+/**
+ * FIX: Allow selecting ANY repo (including the active one).
+ * We still *hide* the active repo from the status bar display later,
+ * but we do not block selecting it, because that creates UX traps.
+ */
+async function pickPinnedReposAnyRepo() {
 	const infos = await getRepoInfos();
 	if (infos.length === 0) {
 		vscode.window.showInformationMessage("No Git repositories detected.");
 		return;
 	}
 
-	// Only offer “other repos”, never the active one
-	const others = infos.filter((r) => r.name !== activeRepoName);
-	if (others.length === 0) {
-		vscode.window.showInformationMessage("No other repos in this workspace.");
-		return;
-	}
-
 	const current = new Set(getPinnedRepos());
 
 	const picks = await vscode.window.showQuickPick(
-		others.map((r) => ({
+		infos.map((r) => ({
 			label: r.name,
 			description: r.branch ?? "DETACHED",
 			detail: !r.hasRemote ? "local-only (no remote)" : undefined,
@@ -300,7 +298,7 @@ async function pickPinnedReposOnlyOther(activeRepoName: string) {
 		{
 			canPickMany: true,
 			placeHolder:
-				"Select OTHER repos to show (active repo is handled by Git/Source Control)",
+				"Select repos to track (active repo is hidden from this display automatically)",
 		},
 	);
 
@@ -420,12 +418,12 @@ async function editRepoRules() {
 // ---------- Extension entry ----------
 
 export function activate(context: vscode.ExtensionContext) {
-	// Item A: controls + shows OTHER repos only (never the active one)
+	// Item A: shows *tracked repos* (never the active one)
 	const trackedItem = vscode.window.createStatusBarItem(
 		vscode.StatusBarAlignment.Left,
 		998,
 	);
-	trackedItem.name = "TacSA Branch Sentinel (Other repos)";
+	trackedItem.name = "TacSA Branch Sentinel (Tracked repos)";
 	trackedItem.command = "tacsa-branch-sentinel.pickPinnedRepos";
 	trackedItem.show();
 
@@ -467,38 +465,45 @@ export function activate(context: vscode.ExtensionContext) {
 			);
 		}
 
-		// --- Secondary item: only when >1 repo exists
-		const others = infos.filter((r) => r.name !== active.name);
-		if (others.length === 0) {
+		// --- Only show the tracker item when this is truly a multi-repo workspace
+		const othersExist = infos.some((r) => r.name !== active.name);
+		if (!othersExist) {
 			trackedItem.hide();
 			return;
 		}
 		trackedItem.show();
 
-		// Pinned = user’s persistent “track these” selection (never mutate it here)
+		// Pinned = user’s persistent selection (can include the active repo).
+		// IMPORTANT: we never mutate it in update(), only in the picker command.
 		const pinnedAll = getPinnedRepos();
 
-		// Which “other repos” are selected? (never include active)
+		// Always compute “display list” as pinned minus active
 		const pinnedToDisplay = pinnedAll.filter((n) => n !== active.name);
 
-		// If nothing pinned at all, prompt user to pick
+		// UX FIX:
+		// - If nothing pinned at all -> show "select repos"
+		// - If something is pinned, but right now it all collapses to active/missing -> ALSO show "select repos"
+		//   (so you don’t lose the clickable status bar entry)
 		if (pinnedAll.length === 0) {
 			trackedItem.text = `${codicon("list-selection")} select repos`;
 			trackedItem.tooltip =
-				"TacSA Branch Sentinel:\nSelect which OTHER repos to show here (active repo is already shown by Git/Source Control).";
+				"TacSA Branch Sentinel:\nClick to select repos to track.\n(Active repo is hidden from this display automatically.)";
 			trackedItem.backgroundColor = undefined;
 			return;
 		}
 
-		// Map pinned-to-display into actual repo infos present in this workspace
+		// Map pinned-to-display into actual repos present in this workspace
 		const selectedInfos = pinnedToDisplay
 			.map((name) => infos.find((r) => r.name === name))
 			.filter(Boolean) as RepoInfo[];
 
-		// If your pinned selection exists, but everything in it is currently ACTIVE (or missing),
-		// then there’s nothing to show in this slot — hide it (Git already shows the active one).
+		// If nothing to show (because the only pinned repo is now active, or pinned repos aren’t present):
+		// keep the item visible with a “select repos” prompt.
 		if (selectedInfos.length === 0) {
-			trackedItem.hide();
+			trackedItem.text = `${codicon("list-selection")} select repos`;
+			trackedItem.tooltip =
+				"TacSA Branch Sentinel:\nNothing to display (your tracked repo is currently active, or not in this workspace).\nClick to update selection.";
+			trackedItem.backgroundColor = undefined;
 			return;
 		}
 
@@ -518,7 +523,8 @@ export function activate(context: vscode.ExtensionContext) {
 		const suffix = remaining > 0 ? ` +${remaining}` : "";
 		trackedItem.text = `+ ${parts.join(" | ")}${suffix}`;
 
-		// Colour this item based on the “worst” mode in the SHOWN list
+		// Colour based on the “worst” mode among what we’re currently showing.
+		// If you have one repo on main (prod) and one on dev -> prod wins -> red.
 		const severityRank: Record<Mode, number> = {
 			prod: 5,
 			unknown: 4,
@@ -550,10 +556,9 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand(
 			"tacsa-branch-sentinel.pickPinnedRepos",
 			async () => {
-				const infos = await getRepoInfos();
-				if (infos.length === 0) return;
-				const active = chooseActiveRepo(infos);
-				await pickPinnedReposOnlyOther(active.name);
+				// FIX: allow selecting ANY repo from anywhere (including the active one).
+				// Active is hidden only in the display logic.
+				await pickPinnedReposAnyRepo();
 				await update();
 			},
 		),
