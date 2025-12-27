@@ -475,35 +475,37 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 		trackedItem.show();
 
-		// Which “other repos” are selected? (never include active)
-		const pinned = getPinnedRepos().filter((n) => n !== active.name);
+		// Pinned = user’s persistent “track these” selection (never mutate it here)
+		const pinnedAll = getPinnedRepos();
 
-		// If nothing selected yet, show an instruction affordance
-		if (pinned.length === 0) {
+		// Which “other repos” are selected? (never include active)
+		const pinnedToDisplay = pinnedAll.filter((n) => n !== active.name);
+
+		// If nothing pinned at all, prompt user to pick
+		if (pinnedAll.length === 0) {
 			trackedItem.text = `${codicon("list-selection")} select repos`;
 			trackedItem.tooltip =
-				"TacSA Branch Sentinel:\nClick to select which OTHER repos to show here.\n(Active repo is already shown by Git/Source Control.)";
+				"TacSA Branch Sentinel:\nSelect which OTHER repos to show here (active repo is already shown by Git/Source Control).";
 			trackedItem.backgroundColor = undefined;
 			return;
 		}
 
-		const pinnedInfos = pinned
-			.map((name) => others.find((r) => r.name === name))
+		// Map pinned-to-display into actual repo infos present in this workspace
+		const selectedInfos = pinnedToDisplay
+			.map((name) => infos.find((r) => r.name === name))
 			.filter(Boolean) as RepoInfo[];
 
-		// If config references repos not present, show a gentle prompt
-		if (pinnedInfos.length === 0) {
-			trackedItem.text = `${codicon("list-selection")} select repos`;
-			trackedItem.tooltip =
-				"TacSA Branch Sentinel:\nNone of your selected repos are currently present in this workspace.\nClick to re-select.";
-			trackedItem.backgroundColor = undefined;
+		// If your pinned selection exists, but everything in it is currently ACTIVE (or missing),
+		// then there’s nothing to show in this slot — hide it (Git already shows the active one).
+		if (selectedInfos.length === 0) {
+			trackedItem.hide();
 			return;
 		}
 
-		// Show up to N “other repos” inline, clipped names; remainder becomes +X
+		// Build a clipped list (show first N, then +remaining)
 		const maxShown = 2;
-		const shown = pinnedInfos.slice(0, maxShown);
-		const remaining = pinnedInfos.length - shown.length;
+		const shown = selectedInfos.slice(0, maxShown);
+		const remaining = selectedInfos.length - shown.length;
 
 		const parts = shown.map((r) => {
 			const m = modeFor(r);
@@ -516,7 +518,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const suffix = remaining > 0 ? ` +${remaining}` : "";
 		trackedItem.text = `+ ${parts.join(" | ")}${suffix}`;
 
-		// Colour this item based on the “worst” mode in the shown list
+		// Colour this item based on the “worst” mode in the SHOWN list
 		const severityRank: Record<Mode, number> = {
 			prod: 5,
 			unknown: 4,
@@ -524,14 +526,15 @@ export function activate(context: vscode.ExtensionContext) {
 			local: 2,
 			neutral: 1,
 		};
+
 		const worst = shown
 			.map(modeFor)
 			.sort((a, b) => severityRank[b] - severityRank[a])[0];
 
 		trackedItem.backgroundColor = backgroundForMode(worst);
 
-		// Tooltip includes ALL pinned (not clipped) + rule/remote tags
-		trackedItem.tooltip = pinnedInfos
+		// Tooltip includes ALL displayed pinned (not clipped)
+		trackedItem.tooltip = selectedInfos
 			.map((r) => {
 				const m = modeFor(r);
 				const src =

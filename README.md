@@ -13,7 +13,7 @@ Built to solve a real, recurring problem when working across **multi-repo worksp
   - 🛡️ / red background → PROD branches (`main`, `master`)
   - 🛠️ / green background → DEV branches (`dev`)
   - ⚠️ / amber → unknown or unclassified branches
-  - 🔒 / purple → local-only repos (no remote)
+  - 🔒 / purple → local-only repos (no remote), or "clean" (no local changes)
 - Applies **workspace-level status bar tinting** based on the _active_ repository
 - Supports **multi-repo workspaces** cleanly without duplicating Git’s own branch indicator
 - Shows **clipped repo names** with overflow (`+N`) for dense workspaces
